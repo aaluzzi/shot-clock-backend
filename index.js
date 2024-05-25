@@ -5,93 +5,79 @@ const server = http.createServer();
 
 const io = new Server(server, {
   cors: {
-    origin: '*', // Adjust this to your frontend's URL, e.g., 'http://example.com'
-    methods: ['GET', 'POST'], // Specify the allowed HTTP methods
+    origin: '*',
+    methods: ['GET', 'POST'],
   }
 });
 
 const rooms = [];
 
 io.on('connection', (socket) => {
-  console.log(socket.id + ' connected');
+  const clientId = socket.handshake?.query?.clientId;
 
-  socket.on('join', (room) => {
-    console.log(socket.id + " joined room " + room);
-    socket.join(room);
-    socket.room = room;
+  if (clientId) {
+    socket.clientId = clientId;
+  }
+  console.log(socket.clientId + ' connected');
 
-    if (room in rooms) {
+  socket.on('join', (room, initialData) => {
+    if (room && room in rooms) {
+      socket.room = room;
+      socket.join(room);
       socket.emit('receive-data', {
         players: rooms[socket.room].players,
         countdown: rooms[socket.room].countdown,
         turnIndex: rooms[socket.room].turnIndex,
-        paused: rooms[socket.room].paused
       });
-    } else {
-      rooms[room] = {
-        controller: socket.id,
-        players: [],
-        countdown: 60,
-        turnIndex: 0,
-        paused: true
+      if (socket.clientId === rooms[socket.room].controller) {
+        socket.emit('receive-role', 'controller');
+      } else {
+        socket.emit('receive-role', 'listener');
       }
-      socket.emit('confirm-controller');
+      console.log(socket.clientId + " joined room " + room);
+    } else if (room && initialData) {
+      socket.room = room;
+      socket.join(room);
+      rooms[room] = {
+        controller: socket.clientId,
+        players: initialData.players,
+        countdown: initialData.countdown,
+        turnIndex: initialData.turnIndex,
+      }
+      socket.emit('receive-role', 'controller');
+      console.log(socket.clientId + " started room " + room);
+    } else {
+      socket.emit('fail-join');
     }
   });
 
   socket.on('update-players', (players) => {
-    console.log('players update:');
-    console.log(players);
-    if (rooms[socket.room] && rooms[socket.room].controller === socket.id) {
+    if (rooms[socket.room] && rooms[socket.room].controller === socket.clientId) {
       rooms[socket.room].players = players;
       socket.to(socket.room).emit('update-players', players);
     }
   });
 
   socket.on('update-turn', turnIndex => {
-    console.log('turnIndex update: ' + turnIndex);
-    if (rooms[socket.room] && rooms[socket.room].controller === socket.id) {
+    if (rooms[socket.room] && rooms[socket.room].controller === socket.clientId) {
       rooms[socket.room].turnIndex = turnIndex;
       socket.to(socket.room).emit('update-turn', turnIndex);
     }
   });
 
   socket.on('update-countdown', countdown => {
-    console.log('countdown update: ' + countdown);
-    if (rooms[socket.room] && rooms[socket.room].controller === socket.id) {
+    if (rooms[socket.room] && rooms[socket.room].controller === socket.clientId) {
       rooms[socket.room].countdown  = countdown;
       socket.to(socket.room).emit('update-countdown', countdown);
     }
   });
 
-  socket.on('update-paused', paused => {
-    console.log('paused update: ' + paused);
-    if (rooms[socket.room] && rooms[socket.room].controller === socket.id) {
-      rooms[socket.room].paused = paused;
-      socket.to(socket.room).emit('update-paused', paused);
-    }
-  });
-
-  socket.on('restart', () => {
-    if (rooms[socket.room] && rooms[socket.room].controller === socket.id) {
-
-      rooms[socket.room].paused = true;
-      rooms[socket.room].countdown = 60;
-      rooms[socket.room].players[0].hasExtended = true;
-      rooms[socket.room].players[1].hasExtended = true;
-
-      socket.to(socket.room).emit('update-paused', true);
-      socket.to(socket.room).emit('update-players', rooms[socket.room].players);
-      socket.to(socket.room).emit('update-countdown', 60);
-    }
-  });
-
-  socket.on('extend', (extendedCountdown) => {
-    if (rooms[socket.room] && rooms[socket.room].controller === socket.id) {
-      rooms[socket.room].players[rooms[socket.room].turnIndex].hasExtension = false;
-      rooms[socket.room].countdown = extendedCountdown;
-      socket.to(socket.room).emit('update-countdown', extendedCountdown);
-      socket.to(socket.room).emit('update-players', rooms[socket.room].players);
+  socket.on('disconnect', async () => {
+    console.log(`${socket.clientId} disconnected`);
+    const roomSockets = await io.in(socket.room).fetchSockets();
+    if (roomSockets.length === 0 && rooms[socket.room]) {
+      delete rooms[socket.room];
+      console.log("Room " + socket.room + " deleted");
     }
   });
 
